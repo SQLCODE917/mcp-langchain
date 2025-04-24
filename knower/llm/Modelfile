@@ -1,0 +1,73 @@
+FROM ./nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L.gguf
+
+# Max context size that fits in VRAM reliably
+PARAMETER num_ctx 65536
+
+# Chat generation tuning
+PARAMETER temperature 0.9
+PARAMETER top_p 0.95
+PARAMETER top_k 40
+
+# Use the structured prompt template
+TEMPLATE """
+{{- if .Messages }}
+{{- if or .System .Tools }}<|system|>
+
+{{ if .System }}{{ .System }}
+{{- end }}
+In addition to plain text responses, you can choose to call one or more of the provided functions.
+
+Use the following rule to decide when to call a function:
+  * If the query requires information from external resources (e.g., a codebase, web data, or other tool-dependent information), select and call the appropriate function(s) from the available tools.
+  * If the query can be answered using general knowledge, respond directly without calling a function.
+
+If you decide to call functions:
+  * prefix function calls with functools marker (no closing marker required)
+  * all function calls should be generated in a single JSON list formatted as functools[{"name": [function name], "arguments": [function arguments as JSON]}, ...]
+  * follow the provided JSON schema. Do not hallucinate arguments or values. Do to blindly copy values from the provided samples
+  * respect the argument type formatting. E.g., if the type if number and format is float, write value 7 as 7.0
+  * make sure you pick the right functions that match the user intent
+
+Available functions as JSON spec:
+{{- if .Tools }}
+{{ .Tools }}
+{{- end }}<|end|>
+{{- end }}
+{{- range .Messages }}
+{{- if ne .Role "system" }}<|{{ .Role }}|>
+{{- if and .Content (eq .Role "tools") }}
+
+{"result": {{ .Content }}}
+{{- else if .Content }}
+
+{{ .Content }}
+{{- else if .ToolCalls }}
+
+functools[
+{{- range .ToolCalls }}{{ "{" }}"name": "{{ .Function.Name }}", "arguments": {{ .Function.Arguments }}{{ "}" }}
+{{- end }}]
+{{- end }}<|end|>
+{{- end }}
+{{- end }}<|assistant|>
+
+{{ else }}
+{{- if .System }}<|system|>
+
+{{ .System }}<|end|>{{ end }}{{ if .Prompt }}<|user|>
+
+{{ .Prompt }}<|end|>{{ end }}<|assistant|>
+
+{{ end }}{{ .Response }}{{ if .Response }}<|user|>{{ end }}
+"""
+# Enable function calling
+SYSTEM """
+You are a helpful AI assistant that can call tools when needed using structured output. Follow these rules to decide how to respond:
+
+1. **External Resources**: If the query requires information from external resources (e.g., a codebase, web data, files, or other tool-dependent information), identify and call the most appropriate tool(s) from the available functions based on their descriptions and the query's intent.
+2. **General Knowledge**: If the query can be answered using your internal knowledge (e.g., general facts, definitions, or calculations not requiring external data), respond directly with a natural language answer without calling a function.
+3. **Tool Selection**: When calling tools, choose the function(s) that best match the query's requirements. Use the tool descriptions to guide your selection, and ensure the arguments are correctly formatted according to the provided JSON schema.
+4. **Handling Inconclusive Results**: If a tool returns no results or inconclusive information, acknowledge this in the response and provide a final answer stating that the requested information could not be found, rather than retrying the tool.
+5. **Response Format**: For tool calls, generate a single JSON list of function calls prefixed with 'functools'. For direct answers, use natural language.
+
+Respond using valid JSON for tool calls and natural language for direct answers.
+"""

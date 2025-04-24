@@ -1,0 +1,137 @@
+"""MCP server that provides a codebase semantic search tool via FAISS and LangChain."""
+
+import hashlib
+import logging
+import os
+from datetime import datetime
+from pathlib import Path
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+from langchain_community.vectorstores import FAISS
+from langchain_ollama import OllamaEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document
+
+# Logging to not clog MCP comms
+os.makedirs("logs", exist_ok=True)
+LOG_FILENAME = f"logs/server_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s %(asctime)s - %(message)s",
+    handlers=[
+        logging.FileHandler(LOG_FILENAME, encoding="utf-8")
+    ]
+)
+logger = logging.getLogger("knower_mcp_server")
+
+mcp = FastMCP("CodebaseKnower")
+
+# Global store so we don't re-index every time
+VECTORSTORE = None
+
+INDEX_DIR = "faiss_index"
+EMBED_MODEL = "nomic-embed-text"
+DEFAULT_REPO_PATH = Path(__file__).parent.parent / "prototype"
+
+load_dotenv()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
+embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
+
+# Load or build index once when server starts
+if os.path.exists(INDEX_DIR):
+    logger.info("Loading existing FAISS index on startup...")
+    VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
+else:
+    logger.info("Building FAISS index on startup...")
+    docs = []
+    for root, _, files in os.walk(DEFAULT_REPO_PATH):
+        logger.info("Walking %s", root)
+        for file in files:
+            logger.info("Processing %s", file)
+            if file.endswith(".py"):
+                logger.info("Adding %s to docs", file)
+                filepath = Path(root) / file
+                with open(filepath, "r", encoding="utf-8") as f:
+                    code = f.read()
+                    doc = Document(
+                        page_content=code,
+                        metadata={"source": str(filepath)}
+                    )
+                    docs.append(doc)
+
+    # Real Engineering Hours:
+    # how many chunks to return? How big should they be?
+    # Check the modelfile - my 4090 benches 65536 tokens,
+    #   that's like 200~300 pages of text AT A TIME
+    # Chunk size of 1000 characters is like 150~250 tokens?
+    #   (multiply that by the k in `similarity_search)`
+    # But does it make sense to just send in 20 or 50 1000-character chunks?
+    # Or to have 5000 or 10000 character chunks?
+    # What I really want is to get the highest quality matches:
+    # How do I retrieve the RIGHT amount
+    #   of the RIGHT code for the agent to understand and answer well?
+    # That requires more experimentation!
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+
+    # save the file path and unique chunk id to log
+    #   to check if the agent keeps requesting same data or not
+    chunks = []
+    for doc in docs:
+        file_path = doc.metadata["source"]
+        chunk_texts = splitter.split_text(doc.page_content)
+        for i, chunk_text in enumerate(chunk_texts):
+            CHUNK_HASH = hashlib.md5(chunk_text.encode("utf-8")).hexdigest()[:8]
+            CHUNK_ID = f"{file_path}::chunk-{i}-{CHUNK_HASH}"
+            logger.info("Indexing chunk %s", CHUNK_ID)
+            chunks.append(Document(
+                page_content=chunk_text,
+                metadata={
+                    "source": file_path,
+                    "chunk_id": CHUNK_ID
+                }
+            ))
+
+    VECTORSTORE = FAISS.from_documents(chunks, embeddings)
+    VECTORSTORE.save_local(INDEX_DIR)
+    logger.info("Index saved to %s", INDEX_DIR)
+
+@mcp.tool()
+def search_codebase(query: str) -> str:
+    """
+    Search the codebase for relevant code using semantic embeddings.
+
+    Use this tool to locate:
+    - Function and class definitions
+    - Specifig logic or algorithms
+    - Implementation details
+    - Files that reference a keyword and concept
+
+    Args:
+        query: A natural language question about the codebase.
+
+    Returns:
+        Relevant code snippets or explanations based on the query.
+    """
+    logger.info("Invoking search_codebase tool for query %s", query)
+    matches = VECTORSTORE.similarity_search(query, k=3)
+    if not matches:
+        return "No relevant code found."
+
+    logger.info("Returning %d documents from FAISS search.", len(matches))
+
+    # debug chunk logging
+    for match_index, d in enumerate(matches, 1):
+        logger.info("Match %d: %s", match_index, d.metadata.get("chunk_id", "unknown"))
+
+    return "\n\n".join([
+        f"File: {d.metadata.get('source', 'unknown')}\n---\n{d.page_content[:800]}..."
+        for d in matches if d.page_content
+    ])
+
+def main():
+    """Start the Knower MCP Server."""
+    logger.info("Starting the Knower MCP Server...")
+    mcp.run(transport="stdio")
+
+if __name__ == "__main__":
+    main()

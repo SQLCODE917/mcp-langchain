@@ -40,16 +40,19 @@ New-NetFirewallRule -DisplayName "Allow Ollama Port 11435" -Direction Inbound -A
 
 ```bash
 .
-├── .gitignore
 ├── README.md
 ├── forerunner
-│   ├── .env
 │   └── interest_client.py
 ├── full-environment.yml
+├── knower
+│   ├── README.md
+│   ├── client.py
+│   ├── llm
+│   │   └── Modelfile
+│   └── server.py
 ├── llm
 │   └── Modelfile
 └── prototype
-    ├── .env
     ├── client.py
     └── server.py
 ```
@@ -62,4 +65,10 @@ Run it with `python3 interest_client.py`.
     - Agent reasoning with ReAct + tool delegation + result explanation
     - Modular client-server separation
     - Cross-process tool transport for local development via `stdio`
-- llm/Modelfile: allows DeepSeek-R1 to use tools
+- llm/Modelfile: allows DeepSeek-R1 to use tools, for `forefunner` and `prototype`
+- knower: after `forerunner` and `prototype`, a more mature Agentic AI application for chatting with your Python codebase
+    - Using the `nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L` local model
+    - Employing advanced ReAct prompting techniques
+    - Developing intuitive understanding of the relationship between semantic embeddings and the LLM
+    - Comprehensive logging
+    -
