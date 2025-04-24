@@ -53,7 +53,7 @@ VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserializ
 - [LangChain API Reference](https://python.langchain.com/api_reference/core/index.html)
 - [Reference Codebase](https://github.com/arunpshankar/react-from-scratch)
 
-## Resign Decisions
+## Design Decisions
 
 - Using `nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L` to explore the limits of context size
 - Modelfile to
