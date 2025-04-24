@@ -56,7 +56,13 @@ VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserializ
 ## Resign Decisions
 
 - Using `nvidia_Llama-3.1-8B-UltraLong-4M-Instruct-Q6_K_L` to explore the limits of context size
-- Modelfile with a template to enable tool use and prevent infinite looping
+- Modelfile to
+    - prevent infinite looping
+    - integrate Ollama with LangChain's StructuredTool format
 - in `server.py`, when building the FAISS index, experimenting with chunk size and quantity
 - in `server.py`, `recursion_limit` to avoid infinite looping
 - in `client.py`, the `explainer_prompt` which prioritizes tool use over defaulting to internal knowledge
+
+## Optimizing chunking for Python
+
+- Instead of splittinig every x characters, split along function and class definitions using an AST

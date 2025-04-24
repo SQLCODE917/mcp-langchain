@@ -5,6 +5,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+import ast
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from langchain_community.vectorstores import FAISS
@@ -37,13 +38,50 @@ load_dotenv()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
 
+
+def extract_code_chunks_from_file(filepath: Path) -> list[Document]:
+    with open(filepath, "r", encoding="utf-8") as f:
+        code = f.read()
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        logger.warning("Skipping file with syntax error: %s", filepath)
+        return []
+
+    lines = code.splitlines(keepends=True)
+    chunks = []
+
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            # Include decorators in chunk
+            decorator_lines = [d.lineno for d in node.decorator_list] if node.decorator_list else []
+            start = min([node.lineno] + decorator_lines) - 1
+            end = getattr(node, 'end_lineno', None)
+            if end is None:
+                end = start + 1
+
+            chunk_code = "".join(lines[start:end])
+            chunk_hash = hashlib.md5(chunk_code.encode("utf-8")).hexdigest()[:8]
+            chunk_id = f"{filepath}::{node.__class__.__name__.lower()}-{node.name}-{chunk_hash}"
+            chunks.append(Document(
+                page_content=chunk_code,
+                metadata={
+                    "source": str(filepath),
+                    "symbol_type": node.__class__.__name__.lower(),
+                    "symbol_name": node.name,
+                    "chunk_id": chunk_id
+                }
+            ))
+    return chunks
+
 # Load or build index once when server starts
 if os.path.exists(INDEX_DIR):
     logger.info("Loading existing FAISS index on startup...")
     VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
 else:
     logger.info("Building FAISS index on startup...")
-    docs = []
+    chunks = []
     for root, _, files in os.walk(DEFAULT_REPO_PATH):
         logger.info("Walking %s", root)
         for file in files:
@@ -51,45 +89,10 @@ else:
             if file.endswith(".py"):
                 logger.info("Adding %s to docs", file)
                 filepath = Path(root) / file
-                with open(filepath, "r", encoding="utf-8") as f:
-                    code = f.read()
-                    doc = Document(
-                        page_content=code,
-                        metadata={"source": str(filepath)}
-                    )
-                    docs.append(doc)
-
-    # Real Engineering Hours:
-    # how many chunks to return? How big should they be?
-    # Check the modelfile - my 4090 benches 65536 tokens,
-    #   that's like 200~300 pages of text AT A TIME
-    # Chunk size of 1000 characters is like 150~250 tokens?
-    #   (multiply that by the k in `similarity_search)`
-    # But does it make sense to just send in 20 or 50 1000-character chunks?
-    # Or to have 5000 or 10000 character chunks?
-    # What I really want is to get the highest quality matches:
-    # How do I retrieve the RIGHT amount
-    #   of the RIGHT code for the agent to understand and answer well?
-    # That requires more experimentation!
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-
-    # save the file path and unique chunk id to log
-    #   to check if the agent keeps requesting same data or not
-    chunks = []
-    for doc in docs:
-        file_path = doc.metadata["source"]
-        chunk_texts = splitter.split_text(doc.page_content)
-        for i, chunk_text in enumerate(chunk_texts):
-            CHUNK_HASH = hashlib.md5(chunk_text.encode("utf-8")).hexdigest()[:8]
-            CHUNK_ID = f"{file_path}::chunk-{i}-{CHUNK_HASH}"
-            logger.info("Indexing chunk %s", CHUNK_ID)
-            chunks.append(Document(
-                page_content=chunk_text,
-                metadata={
-                    "source": file_path,
-                    "chunk_id": CHUNK_ID
-                }
-            ))
+                file_chunks = extract_code_chunks_from_file(filepath)
+                for doc in file_chunks:
+                    logger.info("Indexing chunk %s", doc.metadata.get("chunk_id"))
+                chunks.extend(file_chunks)
 
     VECTORSTORE = FAISS.from_documents(chunks, embeddings)
     VECTORSTORE.save_local(INDEX_DIR)
@@ -113,7 +116,7 @@ def search_codebase(query: str) -> str:
         Relevant code snippets or explanations based on the query.
     """
     logger.info("Invoking search_codebase tool for query %s", query)
-    matches = VECTORSTORE.similarity_search(query, k=3)
+    matches = VECTORSTORE.similarity_search(query, k=10)
     if not matches:
         return "No relevant code found."
 
