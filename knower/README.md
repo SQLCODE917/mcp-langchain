@@ -65,4 +65,27 @@ VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserializ
 
 ## Optimizing chunking for Python
 
-- Instead of splittinig every x characters, split along function and class definitions using an AST
+Instead of splittinig every x characters, split along function and class definitions using an AST
+
+Scaling issue: chunking by top-level AST nodes is simple, but not optimal for large or deeply nested files.
+Maybe need to implement hybrid chunking (AST + semantic text splitting)
+and store the context hierarchy (class -> method -> docstring) in metadata?
+
+2025-04-30
+
+This did have limitations:
+- Naive recursive character-based splitting of chunks may fragment cohesive logic
+- AST Incompleteness, like ignoring module-level logic, lambdas, or nested expressions not wrapped in class/function definitions
+
+Mitigated by:
+- Creating a new AST-informed chunking function that merges docstrings and nested blocks
+- Which introduced a new hardware and LLM limit - large classes and functions had no size constraint, so
+- Splitting AST chunks if they are oversized, but still preserving semantic boundaries
+- Including non-AST top-level logic in the chunks
+- Including inline comments
+
+## Known limitations
+
+- Does not support polyglot codebases - .py only
+- Only supports similarity-based search with no symbolic resolution, no callgraph traversal, and no dependency awareness
+- No hot-reloading on codebase changes

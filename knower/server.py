@@ -13,6 +13,8 @@ from langchain_ollama import OllamaEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 
+from server.recursive_character_text_splitter import extract_chunks
+
 # Logging to not clog MCP comms
 os.makedirs("logs", exist_ok=True)
 LOG_FILENAME = f"logs/server_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
@@ -39,42 +41,6 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
 embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
 
 
-def extract_code_chunks_from_file(filepath: Path) -> list[Document]:
-    with open(filepath, "r", encoding="utf-8") as f:
-        code = f.read()
-
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
-        logger.warning("Skipping file with syntax error: %s", filepath)
-        return []
-
-    lines = code.splitlines(keepends=True)
-    chunks = []
-
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            # Include decorators in chunk
-            decorator_lines = [d.lineno for d in node.decorator_list] if node.decorator_list else []
-            start = min([node.lineno] + decorator_lines) - 1
-            end = getattr(node, 'end_lineno', None)
-            if end is None:
-                end = start + 1
-
-            chunk_code = "".join(lines[start:end])
-            chunk_hash = hashlib.md5(chunk_code.encode("utf-8")).hexdigest()[:8]
-            chunk_id = f"{filepath}::{node.__class__.__name__.lower()}-{node.name}-{chunk_hash}"
-            chunks.append(Document(
-                page_content=chunk_code,
-                metadata={
-                    "source": str(filepath),
-                    "symbol_type": node.__class__.__name__.lower(),
-                    "symbol_name": node.name,
-                    "chunk_id": chunk_id
-                }
-            ))
-    return chunks
-
 # Load or build index once when server starts
 if os.path.exists(INDEX_DIR):
     logger.info("Loading existing FAISS index on startup...")
@@ -89,7 +55,7 @@ else:
             if file.endswith(".py"):
                 logger.info("Adding %s to docs", file)
                 filepath = Path(root) / file
-                file_chunks = extract_code_chunks_from_file(filepath)
+                file_chunks = extract_chunks(filepath)
                 for doc in file_chunks:
                     logger.info("Indexing chunk %s", doc.metadata.get("chunk_id"))
                 chunks.extend(file_chunks)
