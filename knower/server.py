@@ -13,7 +13,7 @@ from langchain_ollama import OllamaEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 
-from server.recursive_character_text_splitter import extract_chunks
+from server.chunk_splitter import extract_chunks
 
 # Logging to not clog MCP comms
 os.makedirs("logs", exist_ok=True)
