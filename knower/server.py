@@ -1,17 +1,15 @@
 """MCP server that provides a codebase semantic search tool via FAISS and LangChain."""
 
-import hashlib
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
-import ast
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from langchain_community.vectorstores import FAISS
 from langchain_ollama import OllamaEmbeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
+from sentence_transformers import CrossEncoder
 
 from server.chunk_splitter import extract_chunks
 
@@ -35,6 +33,9 @@ VECTORSTORE = None
 INDEX_DIR = "faiss_index"
 EMBED_MODEL = "nomic-embed-text"
 DEFAULT_REPO_PATH = Path(__file__).parent.parent / "prototype"
+# this is the HuggingFace reranker model - must be good, right?
+RERANK_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+RERANKER = CrossEncoder(RERANK_MODEL_NAME)
 
 load_dotenv()
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
@@ -64,10 +65,30 @@ else:
     VECTORSTORE.save_local(INDEX_DIR)
     logger.info("Index saved to %s", INDEX_DIR)
 
+def rerank(query: str, docs: list[Document], top_k: int = 10) -> list[Document]:
+    """
+    Rerank a list of LangChain documents using a cross-encoder.
+
+    Args:
+        query: The user's search query.
+        docs: A list of LangChain Document objects.
+        top_k: Number of top reranked results to return.
+
+    Returns:
+        List of Documents sorted by relevance.
+    """
+    logger.info("Reranking %d documents", len(docs))
+    pairs = [(query, doc.page_content) for doc in docs]
+    scores = RERANKER.predict(pairs)
+
+    # Combine scores with documents
+    reranked = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    return [doc for doc, _ in reranked[:top_k]]
+
 @mcp.tool()
 def search_codebase(query: str) -> str:
     """
-    Search the codebase for relevant code using semantic embeddings.
+    Search the codebase for relevant code using semantic embeddings with metadata filtering.
 
     Use this tool to locate:
     - Function and class definitions
@@ -82,19 +103,54 @@ def search_codebase(query: str) -> str:
         Relevant code snippets or explanations based on the query.
     """
     logger.info("Invoking search_codebase tool for query %s", query)
-    matches = VECTORSTORE.similarity_search(query, k=10)
+    matches = VECTORSTORE.similarity_search(query, k=20)
     if not matches:
         return "No relevant code found."
 
-    logger.info("Returning %d documents from FAISS search.", len(matches))
-
-    # debug chunk logging
+    logger.info("1. Semantic search returned %d documents.", len(matches))
+    # Debug chunk logging
     for match_index, d in enumerate(matches, 1):
         logger.info("Match %d: %s", match_index, d.metadata.get("chunk_id", "unknown"))
 
+    # Infer filter intent from query experiment
+    filter_types = []
+    if "function" in query.lower():
+        filter_types.append("function")
+    if "class" in query.lower():
+        filter_types.append("class")
+    if "comment" in query.lower():
+        filter_types.append("comment")
+    if "top-level" in query.lower() or "script" in query.lower():
+        filter_types.append("toplevel")
+
+    if filter_types:
+        logger.info("Applying metadata filter for types: %s", filter_types)
+        filtered = [
+            d for d in matches
+            if d.metadata.get("symbol_type", "").lower() in filter_types
+        ]
+    else:
+        filtered = matches
+
+    if not filtered:
+        return f"No relevant code found for types: {filter_types}"
+
+    logger.info("2. Returning %d filtered documents.", len(filtered))
+
+    # Reranking
+    # Each query/chunks pair is scored by a cross-encoder that jointly attends to both inputs.
+    # Warning: This is a blocking call.
+    # Could be made async, if needed, I suppose,
+    #   by wrapping with FastAPI+uvicorn to make an "inference server" or something...
+    top_k = rerank(query, filtered, top_k=10)
+
+    logger.info("3. Reranking:")
+    for rerank_index, d in enumerate(top_k, 1):
+        logger.info("Rank %d: :%s", rerank_index, d.metadata.get("chunk_id", "unknown"))
+
     return "\n\n".join([
-        f"File: {d.metadata.get('source', 'unknown')}\n---\n{d.page_content[:800]}..."
-        for d in matches if d.page_content
+        f"File: {d.metadata.get('source', 'unknown')}\nSymbol: {d.metadata.get('symbol_qualifier')}\n---\n{d.page_content[:800]}..."
+        for d in top_k if d.page_content
     ])
 
 def main():

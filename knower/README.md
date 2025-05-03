@@ -84,6 +84,33 @@ Mitigated by:
 - Including non-AST top-level logic in the chunks
 - Including inline comments
 
+2025-05-03
+
+Considering the semantic chunking system strong enough, attempting to now to introduce ranking (like, reranking and filtering),
+and narrowing (like, by looking at metadata and having a chunk selection strategy):
+
+1. Upgrade from Similarity Search to Hybrid Reranking:
+adding a reranker to sort top-k results using query context matching.
+This should make good use of the fine-grained chunks and their metadata!
+I expect signifficant improvements.
+```
+pip install sentence-transformers
+```
+Error: `ERROR: Error while checking for conflicts. ... TypeError: 'str' object is not callable`
+Workaround (maybe downgrade pip from 25.0 to a version from Python 3.10 era?)
+```
+pip install "pip<23.3"
+pip install sentence-transformers
+```
+
+2. Filter using `symbol_type`, symbol_name` and `parent_class`:
+going to invent criteria like "if query includes `class`, boost when `symbol_type == 'classdef'`,
+and if query includes "in function X", filter by `symbol_name == X`.
+Hoping for increased precision.
+
+Success! chunk debugging showed that for exact match, number of chunks was reduced from 11 to 4(!),
+and for open ended queries, the ranking was improved by boosting more relevant chunks.
+
 ## Known limitations
 
 - Does not support polyglot codebases - .py only
