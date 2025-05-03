@@ -111,6 +111,13 @@ Hoping for increased precision.
 Success! chunk debugging showed that for exact match, number of chunks was reduced from 11 to 4(!),
 and for open ended queries, the ranking was improved by boosting more relevant chunks.
 
+Addendum:
+Introduced a chunking lower limit to keep small functions as is.
+512 tokens is (assuming 1.2~1.5 tokens per word), 350~420 words, maybe 30~40 lines of Python code.
+That's pretty much the ideal function size, isn't it?
+Keep those intact and don't split them into multiple chunks.
+
+
 ## Known limitations
 
 - Does not support polyglot codebases - .py only
