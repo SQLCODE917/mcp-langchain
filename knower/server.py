@@ -2,8 +2,6 @@
 
 import logging
 import os
-import signal
-import uvicorn
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -13,7 +11,8 @@ from langchain_ollama import OllamaEmbeddings
 from langchain.docstore.document import Document
 from sentence_transformers import CrossEncoder
 from starlette.applications import Starlette
-from starlette.routing import Mount, Host
+from starlette.routing import Mount
+import uvicorn
 
 from server.chunk_splitter import extract_chunks
 
@@ -48,7 +47,17 @@ embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
 
 # Load or build index once when server starts
 def initialize_index():
-    global VECTORSTORE	
+    """
+    Initializes the FAISS vector index for the codebase.
+
+    If a saved FAISS index exists at INDEX_DIR, it is loaded using the specified embedding model.
+    Otherwise, the codebase at DEFAULT_REPO_PATH is recursively scanned for Python files,
+    which are then chunked and embedded to build a new FAISS index.
+    The new index is saved to disk for future reuse.
+
+    Updates the global VECTORSTORE variable with the loaded or constructed FAISS index.
+    """
+    global VECTORSTORE
     if os.path.exists(INDEX_DIR):
         logger.info("Loading existing FAISS index on startup...")
         VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
@@ -159,12 +168,11 @@ def search_codebase(query: str) -> str:
         for d in top_k if d.page_content
     ])
 
-async def lifespan(app: Starlette):
+async def lifespan(_):
     logger.info("Lifespan startup: initializing FAISS index")
     initialize_index()
     yield
     logger.info("Lifespan shutdown: cleaning up reranker threads")
-    EXECUTOR.shutdown(wait=True)
 
 if __name__ == "__main__":
     app = Starlette(
@@ -176,7 +184,7 @@ if __name__ == "__main__":
     )
 
     uvicorn.run(
-        app, 
-        host="0.0.0.0", 
+        app,
+        host="0.0.0.0",
         port=8082
     )
