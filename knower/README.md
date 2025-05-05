@@ -84,7 +84,7 @@ Mitigated by:
 - Including non-AST top-level logic in the chunks
 - Including inline comments
 
-2025-05-03
+2025-05-03 - Improving on Similarity Search
 
 Considering the semantic chunking system strong enough, attempting to now to introduce ranking (like, reranking and filtering),
 and narrowing (like, by looking at metadata and having a chunk selection strategy):
@@ -116,6 +116,23 @@ Introduced a chunking lower limit to keep small functions as is.
 512 tokens is (assuming 1.2~1.5 tokens per word), 350~420 words, maybe 30~40 lines of Python code.
 That's pretty much the ideal function size, isn't it?
 Keep those intact and don't split them into multiple chunks.
+
+2025-05-04 - Improving on STDIO
+
+Currently, Server <-> Client comms are done over STDIO.
+Time to introduce SSE transport instead to support streaming LLM output from server to client.
+There's an option to use WebSockets, but I think I'll go with SSE first because it's "just HTTP" and feels more familiar.
+
+And I have just introduced the blocking call to rerank, would want to make it async.
+Making it async will be difficult because FastMCP does not support async tool calling.
+The thing is that CrossEncoder is not releasing it's threads even after `predict()` returns,
+preventing graceful shutdown.
+This is a known issue right now.
+
+1. SSE transport:
+```
+pip install uvicorn sse-starlette
+```
 
 
 ## Known limitations

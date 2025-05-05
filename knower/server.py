@@ -2,6 +2,8 @@
 
 import logging
 import os
+import signal
+import uvicorn
 from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
@@ -10,6 +12,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_ollama import OllamaEmbeddings
 from langchain.docstore.document import Document
 from sentence_transformers import CrossEncoder
+from starlette.applications import Starlette
+from starlette.routing import Mount, Host
 
 from server.chunk_splitter import extract_chunks
 
@@ -43,27 +47,29 @@ embeddings = OllamaEmbeddings(model=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
 
 
 # Load or build index once when server starts
-if os.path.exists(INDEX_DIR):
-    logger.info("Loading existing FAISS index on startup...")
-    VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
-else:
-    logger.info("Building FAISS index on startup...")
-    chunks = []
-    for root, _, files in os.walk(DEFAULT_REPO_PATH):
-        logger.info("Walking %s", root)
-        for file in files:
-            logger.info("Processing %s", file)
-            if file.endswith(".py"):
-                logger.info("Adding %s to docs", file)
-                filepath = Path(root) / file
-                file_chunks = extract_chunks(filepath)
-                for doc in file_chunks:
-                    logger.info("Indexing chunk %s", doc.metadata.get("chunk_id"))
-                chunks.extend(file_chunks)
+def initialize_index():
+    global VECTORSTORE	
+    if os.path.exists(INDEX_DIR):
+        logger.info("Loading existing FAISS index on startup...")
+        VECTORSTORE = FAISS.load_local(INDEX_DIR, embeddings, allow_dangerous_deserialization=True)
+    else:
+        logger.info("Building FAISS index on startup...")
+        chunks = []
+        for root, _, files in os.walk(DEFAULT_REPO_PATH):
+            logger.info("Walking %s", root)
+            for file in files:
+                logger.info("Processing %s", file)
+                if file.endswith(".py"):
+                    logger.info("Adding %s to docs", file)
+                    filepath = Path(root) / file
+                    file_chunks = extract_chunks(filepath)
+                    for doc in file_chunks:
+                        logger.info("Indexing chunk %s", doc.metadata.get("chunk_id"))
+                    chunks.extend(file_chunks)
 
-    VECTORSTORE = FAISS.from_documents(chunks, embeddings)
-    VECTORSTORE.save_local(INDEX_DIR)
-    logger.info("Index saved to %s", INDEX_DIR)
+        VECTORSTORE = FAISS.from_documents(chunks, embeddings)
+        VECTORSTORE.save_local(INDEX_DIR)
+        logger.info("Index saved to %s", INDEX_DIR)
 
 def rerank(query: str, docs: list[Document], top_k: int = 10) -> list[Document]:
     """
@@ -153,10 +159,24 @@ def search_codebase(query: str) -> str:
         for d in top_k if d.page_content
     ])
 
-def main():
-    """Start the Knower MCP Server."""
-    logger.info("Starting the Knower MCP Server...")
-    mcp.run(transport="stdio")
+async def lifespan(app: Starlette):
+    logger.info("Lifespan startup: initializing FAISS index")
+    initialize_index()
+    yield
+    logger.info("Lifespan shutdown: cleaning up reranker threads")
+    EXECUTOR.shutdown(wait=True)
 
 if __name__ == "__main__":
-    main()
+    app = Starlette(
+        debug=True,
+        routes=[
+            Mount('/', app=mcp.sse_app())
+        ],
+        lifespan=lifespan
+    )
+
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8082
+    )

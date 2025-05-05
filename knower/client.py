@@ -11,8 +11,8 @@ from langchain_core.messages import ToolMessage
 from langchain_ollama import ChatOllama
 from langchain_mcp_adapters.tools import load_mcp_tools
 from langgraph.prebuilt import create_react_agent
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
+from mcp.client.sse import sse_client
 
 def load_config():
     """Loads .env values"""
@@ -97,27 +97,25 @@ async def main():
     """
     config = load_config()
 
-    server_script = Path(__file__).parent / "server.py"
-    server_params = StdioServerParameters(
-        command="python3",
-        args=[str(server_script)]
-    )
-
     llm = ChatOllama(
         base_url=config["ollama_base_url"],
         model=config["ollama_model"],
         temperature=config["llm_temperature"]
     )
 
-    async with stdio_client(server_params) as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
+    try:
+        async with sse_client("http://127.0.0.1:8082/sse") as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
 
-            tools = await load_mcp_tools(session)
-            logger.info("Loaded MCP Tools: %s", tools)
+                tools = await load_mcp_tools(session)
+                logger.info("Loaded MCP Tools: %s", tools)
 
-            agent = create_react_agent(llm, tools)
-            await run_agent(agent, llm)
+                agent = create_react_agent(llm, tools)
+                await run_agent(agent, llm)
+    except Exception as e:
+        logger.exception("Failed to connect to SSE server")
+        sys.exit(1)
 
 if __name__ == "__main__":
     asyncio.run(main())
